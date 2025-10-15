@@ -9,7 +9,12 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.pouchitpoc",
+      "infoPlist": {
+        "NSCameraUsageDescription": "카메라 권한이 필요합니다.",
+        "NSPhotoLibraryUsageDescription": "사진 라이브러리 접근 권한이 필요합니다."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +24,16 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.pouchitpoc",
+      "permissions": [
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE",
+        "RECEIVE_BOOT_COMPLETED",
+        "FOREGROUND_SERVICE",
+        "POST_NOTIFICATIONS"
+      ]
     },
     "web": {
       "output": "static",

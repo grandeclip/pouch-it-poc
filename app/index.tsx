@@ -77,6 +77,7 @@ export default function UploadScreen() {
   }
   useEffect(() => {
     let previousAppState = AppState.currentState;
+    let backgroundLogInterval: ReturnType<typeof setInterval> | undefined;
 
     const subscription = AppState.addEventListener(
       "change",
@@ -84,17 +85,32 @@ export default function UploadScreen() {
         console.log(`[AppState] ${previousAppState} -> ${nextAppState}`);
 
         // 포그라운드 -> 백그라운드 전환
-        // TaskManager가 자동으로 백그라운드에서 계속 실행하므로
-        // 별도로 executeUploadTask 호출 불필요
+        if (previousAppState === "active" && nextAppState.match(/inactive|background/)) {
+          console.log("🌙 [백그라운드] 진입 - 1초마다 로그 시작");
+
+          // 1초마다 로그 찍기
+          let count = 0;
+          backgroundLogInterval = setInterval(() => {
+            count++;
+            console.log(`🌙 [백그라운드 활성] ${count}초 경과 - 업로드 상태: ${status}`);
+          }, 1000);
+        }
 
         // 백그라운드 -> 포그라운드 복귀
-        if (
-          nextAppState === "active" &&
-          autoUploadEnabled &&
-          status !== "uploading"
-        ) {
-          console.log("[AppState] 포그라운드 복귀 - 스캔 시작");
-          initializeUpload();
+        if (nextAppState === "active") {
+          console.log("☀️ [포그라운드] 복귀");
+
+          // 백그라운드 로그 중지
+          if (backgroundLogInterval) {
+            clearInterval(backgroundLogInterval);
+            backgroundLogInterval = undefined;
+            console.log("🌙 [백그라운드] 로그 중지");
+          }
+
+          if (autoUploadEnabled && status !== "uploading") {
+            console.log("[AppState] 포그라운드 복귀 - 스캔 시작");
+            initializeUpload();
+          }
         }
 
         previousAppState = nextAppState;
@@ -103,6 +119,9 @@ export default function UploadScreen() {
 
     return () => {
       subscription.remove();
+      if (backgroundLogInterval) {
+        clearInterval(backgroundLogInterval);
+      }
     };
   }, [autoUploadEnabled, status]);
 

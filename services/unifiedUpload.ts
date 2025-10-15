@@ -1,5 +1,7 @@
 import { API_CONFIG } from "@/constants/config";
 import * as BackgroundFetch from "expo-background-fetch";
+import * as FileSystem from "expo-file-system/legacy";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as MediaLibrary from "expo-media-library";
 import * as TaskManager from "expo-task-manager";
 import { markAsFailed, markAsUploaded, saveUploadStatus } from "./uploadDB";
@@ -35,46 +37,61 @@ async function uploadSingleFile(
       }
     }
 
+    // 이미지 압축 (0.7 품질)
+    const compressedImage = await ImageManipulator.manipulateAsync(
+      uploadUri,
+      [], // 리사이즈 없이 압축만
+      { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+    );
+
     const uploadUrl = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SCREENSHOTS}`;
 
     // FormData 생성
     const formData = new FormData();
     // @ts-ignore - React Native의 FormData는 타입 정의가 다름
     formData.append("screenshots", {
-      uri: uploadUri,
+      uri: compressedImage.uri,
       type: "image/jpeg",
       name: file.filename,
     });
     formData.append("userId", userId);
 
-    // fetch 사용 - 백그라운드에서도 완료까지 실행됨
-    const response = await fetch(uploadUrl, {
-      method: "POST",
+    const fileMimeType = "image/jpeg";
+    const uploadOptions = {
+      httpMethod: "POST",
+      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+      fieldName: "screenshots", // 서버에서 파일을 받을 필드 이름 (예: req.file)
+      mimeType: fileMimeType,
       headers: {
-        "Content-Type": "multipart/form-data",
-        "X-Guest-Id": userId,
+        // 서버에서 필요한 인증 토큰 등을 여기에 추가합니다.
+        Authorization: "Bearer YOUR_AUTH_TOKEN",
+        "Content-Type": fileMimeType,
       },
-      body: formData,
-    });
+      parameters: {
+        userId: "12345",
+        description: "My image upload",
+      },
+      sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+    };
 
-    console.log(`[uploadSingleFile] 응답 상태: ${response.status}`);
+    const uploadTask = FileSystem.createUploadTask(
+      uploadUrl,
+      uploadUri,
+      uploadOptions
+    );
+
+    const response = await uploadTask.uploadAsync();
 
     if (response.ok) {
-      console.log(`✅ 파일 업로드 성공: ${file.filename}`);
       return { success: true };
     } else {
       const responseText = await response.text();
-      console.error(
-        `[uploadSingleFile] 서버 오류 응답: ${response.status} - ${responseText}`
-      );
       return {
         success: false,
         error: `서버 응답 오류: ${response.status} - ${responseText}`,
       };
     }
   } catch (error) {
-    console.error(`❌ 파일 업로드 실패: ${file.filename}`, error);
-
     return {
       success: false,
       error: error instanceof Error ? error.message : "알 수 없는 오류",
@@ -97,7 +114,9 @@ async function uploadBatch(
     let failedCount = 0;
 
     // 배치 안의 파일들을 순차적으로 업로드
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+
       const result = await uploadSingleFile(file, userId);
       if (result.success) {
         successCount++;

@@ -1,5 +1,4 @@
 import { API_CONFIG } from "@/constants/config";
-import axios from "axios";
 import * as BackgroundFetch from "expo-background-fetch";
 import * as MediaLibrary from "expo-media-library";
 import * as TaskManager from "expo-task-manager";
@@ -14,78 +13,114 @@ export const UNIFIED_UPLOAD_TASK = "UNIFIED_UPLOAD_TASK";
 const BATCH_SIZE = 20;
 
 /**
- * 파일 배치 업로드 (axios 사용)
+ * 단일 파일 업로드 (fetch 사용)
+ * fetch는 네이티브에서 백그라운드를 일부 지원
  */
-async function uploadBatch(
-  files: { id: string; uri: string; filename: string }[],
-  userId: string,
-  isBackground: boolean
+async function uploadSingleFile(
+  file: { id: string; uri: string; filename: string },
+  userId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const formData = new FormData();
+    let uploadUri = file.uri;
 
-    // 모든 파일의 URI를 병렬로 변환
-    const uploadUris = await Promise.all(
-      files.map(async (file) => {
-        if (
-          file.uri.startsWith("ph://") ||
-          file.uri.startsWith("ph-upload://")
-        ) {
-          try {
-            const asset = await MediaLibrary.getAssetInfoAsync(file.id);
-            if (asset.localUri) {
-              return { ...file, uri: asset.localUri };
-            }
-          } catch (error) {
-            console.error(`URI 변환 실패: ${file.filename}`, error);
-          }
+    // iOS Photos URI 변환
+    if (uploadUri.startsWith("ph://") || uploadUri.startsWith("ph-upload://")) {
+      try {
+        const asset = await MediaLibrary.getAssetInfoAsync(file.id);
+        if (asset.localUri) {
+          uploadUri = asset.localUri;
         }
-        return file;
-      })
-    );
-
-    // FormData에 파일 추가
-    for (const file of uploadUris) {
-      // @ts-ignore - React Native의 FormData는 타입 정의가 다름
-      formData.append("screenshots", {
-        uri: file.uri,
-        type: "image/jpeg",
-        name: file.filename,
-      });
+      } catch (error) {
+        console.error(`URI 변환 실패: ${file.filename}`, error);
+      }
     }
-
-    formData.append("userId", userId);
 
     const uploadUrl = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SCREENSHOTS}`;
 
-    // 백그라운드에서는 타임아웃을 짧게 설정 (30초 제한)
-    const timeout = isBackground ? 25000 : 60000;
+    // FormData 생성
+    const formData = new FormData();
+    // @ts-ignore - React Native의 FormData는 타입 정의가 다름
+    formData.append("screenshots", {
+      uri: uploadUri,
+      type: "image/jpeg",
+      name: file.filename,
+    });
+    formData.append("userId", userId);
 
-    const response = await axios.post(uploadUrl, formData, {
+    // fetch 사용 - 백그라운드에서도 완료까지 실행됨
+    const response = await fetch(uploadUrl, {
+      method: "POST",
       headers: {
         "Content-Type": "multipart/form-data",
         "X-Guest-Id": userId,
       },
-      timeout,
+      body: formData,
     });
 
-    if (response.status >= 200 && response.status < 300) {
+    console.log(`[uploadSingleFile] 응답 상태: ${response.status}`);
+
+    if (response.ok) {
+      console.log(`✅ 파일 업로드 성공: ${file.filename}`);
+      return { success: true };
+    } else {
+      const responseText = await response.text();
+      console.error(
+        `[uploadSingleFile] 서버 오류 응답: ${response.status} - ${responseText}`
+      );
+      return {
+        success: false,
+        error: `서버 응답 오류: ${response.status} - ${responseText}`,
+      };
+    }
+  } catch (error) {
+    console.error(`❌ 파일 업로드 실패: ${file.filename}`, error);
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "알 수 없는 오류",
+    };
+  }
+}
+
+/**
+ * 파일 배치 업로드 (배치 안의 파일들을 순차적으로)
+ */
+async function uploadBatch(
+  files: { id: string; uri: string; filename: string }[],
+  userId: string,
+  _isBackground: boolean
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    console.log(`[uploadBatch] ${files.length}개 파일 순차 업로드 시작`);
+
+    let successCount = 0;
+    let failedCount = 0;
+
+    // 배치 안의 파일들을 순차적으로 업로드
+    for (const file of files) {
+      const result = await uploadSingleFile(file, userId);
+      if (result.success) {
+        successCount++;
+      } else {
+        failedCount++;
+      }
+    }
+
+    if (failedCount > 0) {
+      console.warn(`⚠️ ${failedCount}개 파일 업로드 실패`);
+    }
+
+    if (successCount > 0) {
+      console.log(`✅ 배치 업로드 성공: ${successCount}/${files.length}개`);
       return { success: true };
     } else {
       return {
         success: false,
-        error: `서버 응답 오류: ${response.status}`,
+        error: `모든 파일 업로드 실패 (${failedCount}개)`,
       };
     }
   } catch (error) {
     console.error("배치 업로드 실패:", error);
-
-    if (axios.isAxiosError(error)) {
-      return {
-        success: false,
-        error: error.response?.data?.message || error.message,
-      };
-    }
 
     return {
       success: false,
@@ -275,9 +310,6 @@ export async function unregisterPeriodicUpload(): Promise<void> {
 
 /**
  * 파일들을 병렬 업로드
- *
- * axios 요청은 한 번 시작되면 백그라운드 전환되어도
- * 네트워크 레이어에서 계속 실행됩니다.
  */
 export async function uploadFiles(
   files: { id: string; uri: string; filename: string }[]

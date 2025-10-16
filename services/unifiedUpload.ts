@@ -22,10 +22,12 @@ async function uploadSingleFile(
   file: { id: string; uri: string; filename: string },
   userId: string
 ): Promise<{ success: boolean; error?: string }> {
+  const fileStartTime = Date.now();
   try {
     let uploadUri = file.uri;
 
     // iOS Photos URI 변환
+    const uriConvertStart = Date.now();
     if (uploadUri.startsWith("ph://") || uploadUri.startsWith("ph-upload://")) {
       try {
         const asset = await MediaLibrary.getAssetInfoAsync(file.id);
@@ -36,13 +38,16 @@ async function uploadSingleFile(
         console.error(`URI 변환 실패: ${file.filename}`, error);
       }
     }
+    const uriConvertTime = Date.now() - uriConvertStart;
 
     // 이미지 압축 (0.7 품질)
+    const compressStart = Date.now();
     const compressedImage = await ImageManipulator.manipulateAsync(
       uploadUri,
       [], // 리사이즈 없이 압축만
       { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
     );
+    const compressTime = Date.now() - compressStart;
 
     const uploadUrl = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SCREENSHOTS}`;
 
@@ -58,6 +63,7 @@ async function uploadSingleFile(
       },
     };
 
+    const uploadStart = Date.now();
     const uploadTask = FileSystem.createUploadTask(
       uploadUrl,
       compressedImage.uri,
@@ -65,6 +71,12 @@ async function uploadSingleFile(
     );
 
     const res = await uploadTask.uploadAsync();
+    const uploadTime = Date.now() - uploadStart;
+
+    const totalTime = Date.now() - fileStartTime;
+    console.log(
+      `[타이밍] ${file.filename}: URI 변환 ${uriConvertTime}ms | 압축 ${compressTime}ms | 업로드 ${uploadTime}ms | 총 ${totalTime}ms`
+    );
 
     if (!res) {
       return {
@@ -95,16 +107,24 @@ async function uploadSingleFile(
 async function uploadBatch(
   files: { id: string; uri: string; filename: string }[],
   userId: string,
-  _isBackground: boolean
+  _isBackground: boolean,
+  batchIndex: number
 ): Promise<{
   successFiles: { id: string; uri: string; filename: string }[];
-  failedFiles: { file: { id: string; uri: string; filename: string }; error: string }[];
+  failedFiles: {
+    file: { id: string; uri: string; filename: string };
+    error: string;
+  }[];
 }> {
+  const batchStartTime = Date.now();
   try {
-    console.log(`[uploadBatch] ${files.length}개 파일 순차 업로드 시작`);
+    console.log(`[배치 ${batchIndex}] ${files.length}개 파일 순차 업로드 시작`);
 
     const successFiles: { id: string; uri: string; filename: string }[] = [];
-    const failedFiles: { file: { id: string; uri: string; filename: string }; error: string }[] = [];
+    const failedFiles: {
+      file: { id: string; uri: string; filename: string };
+      error: string;
+    }[] = [];
 
     // 배치 안의 파일들을 순차적으로 업로드
     for (let i = 0; i < files.length; i++) {
@@ -121,21 +141,26 @@ async function uploadBatch(
       }
     }
 
+    const batchTime = Date.now() - batchStartTime;
+    const avgTimePerFile = batchTime / files.length;
+
     // 로그 출력
     if (failedFiles.length > 0) {
       console.warn(
-        `⚠️ ${failedFiles.length}개 파일 업로드 실패:`,
+        `⚠️ [배치 ${batchIndex}] ${failedFiles.length}개 파일 업로드 실패:`,
         failedFiles.map((f) => `\n  - ${f.file.filename}: ${f.error}`).join("")
       );
     }
 
-    if (successFiles.length > 0) {
-      console.log(`✅ 배치 업로드 성공: ${successFiles.length}/${files.length}개`);
-    }
+    console.log(
+      `✅ [배치 ${batchIndex}] 완료: ${successFiles.length}/${
+        files.length
+      }개 성공 | 총 ${batchTime}ms | 파일당 평균 ${avgTimePerFile.toFixed(0)}ms`
+    );
 
     return { successFiles, failedFiles };
   } catch (error) {
-    console.error("[uploadBatch] 예외 발생:", error);
+    console.error(`[배치 ${batchIndex}] 예외 발생:`, error);
 
     // 예외 발생 시 모든 파일을 실패로 처리
     return {
@@ -155,7 +180,10 @@ async function uploadBatch(
 async function performUpload(
   files: { id: string; uri: string; filename: string }[]
 ): Promise<BackgroundFetch.BackgroundFetchResult> {
+  const totalStartTime = Date.now();
+  console.log(`\n${"=".repeat(60)}`);
   console.log(`[UnifiedUpload] 업로드 시작: ${files.length}개 파일`);
+  console.log(`${"=".repeat(60)}\n`);
 
   try {
     // 1. 미디어 라이브러리 권한 확인
@@ -177,7 +205,7 @@ async function performUpload(
     }
 
     console.log(
-      `[UnifiedUpload] ${batches.length}개 배치를 병렬로 업로드 시작`
+      `[UnifiedUpload] ${batches.length}개 배치를 병렬로 업로드 시작 (배치 크기: ${BATCH_SIZE})`
     );
 
     // 3. 모든 파일 uploading으로 표시
@@ -200,8 +228,8 @@ async function performUpload(
     });
 
     // 5. 모든 배치를 병렬로 업로드
-    const batchPromises = batches.map((batch) =>
-      uploadBatch(batch, API_CONFIG.GUEST_USER_ID, false)
+    const batchPromises = batches.map((batch, index) =>
+      uploadBatch(batch, API_CONFIG.GUEST_USER_ID, false, index + 1)
     );
     const batchResults = await Promise.allSettled(batchPromises);
 
@@ -236,9 +264,22 @@ async function performUpload(
       isUploading: false,
     });
 
+    const totalTime = Date.now() - totalStartTime;
+    const avgTimePerFile = totalTime / files.length;
+    const successRate = ((successful / files.length) * 100).toFixed(1);
+
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`[전체 통계]`);
+    console.log(`  총 파일: ${files.length}개`);
     console.log(
-      `[UnifiedUpload] 업로드 완료: 성공 ${successful}개, 실패 ${failed}개`
+      `  성공: ${successful}개 | 실패: ${failed}개 | 성공률: ${successRate}%`
     );
+    console.log(
+      `  총 소요 시간: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}초)`
+    );
+    console.log(`  파일당 평균: ${avgTimePerFile.toFixed(0)}ms`);
+    console.log(`  배치 수: ${batches.length}개 (병렬 실행)`);
+    console.log(`${"=".repeat(60)}\n`);
 
     if (successful > 0) {
       return BackgroundFetch.BackgroundFetchResult.NewData;

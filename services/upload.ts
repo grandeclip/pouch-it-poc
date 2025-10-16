@@ -34,7 +34,7 @@ export async function uploadScreenshots(
         lastProgress = progress.current;
       }
     }
-  }, 200); // 200ms마다 체크 (더 빠른 UI 업데이트)
+  }, 500);
 
   try {
     // TaskManager 내부에서 병렬 업로드 실행 (await로 대기)

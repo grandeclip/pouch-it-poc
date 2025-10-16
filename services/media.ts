@@ -17,11 +17,9 @@ export async function getScreenshotsFromLibrary(): Promise<ScreenshotAsset[]> {
       includeSmartAlbums: true,
     });
 
-    console.log("=== 사용 가능한 앨범 목록 ===");
     albums.forEach((album) => {
       console.log(`- ${album.title} (${album.assetCount}개)`);
     });
-    console.log("========================");
 
     // Screenshots 앨범 찾기 (다양한 이름 지원)
     const screenshotAlbum = albums.find((album) => {
@@ -47,7 +45,7 @@ export async function getScreenshotsFromLibrary(): Promise<ScreenshotAsset[]> {
     const albumAssets = await MediaLibrary.getAssetsAsync({
       album: screenshotAlbum,
       mediaType: MediaLibrary.MediaType.photo,
-      first: 1000, // 최대 1000개까지 가져오기
+      first: 100, // 최대 10개까지 가져오기
       sortBy: MediaLibrary.SortBy.creationTime,
     });
 

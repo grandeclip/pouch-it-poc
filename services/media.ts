@@ -45,7 +45,7 @@ export async function getScreenshotsFromLibrary(): Promise<ScreenshotAsset[]> {
     const albumAssets = await MediaLibrary.getAssetsAsync({
       album: screenshotAlbum,
       mediaType: MediaLibrary.MediaType.photo,
-      first: 100, // 최대 10개까지 가져오기
+      first: 300,
       sortBy: MediaLibrary.SortBy.creationTime,
     });
 

@@ -24,10 +24,7 @@ export async function uploadScreenshots(
   const startTime = Date.now();
   console.log(`📦 TaskManager 기반 병렬 업로드 시작: ${files.length}개 파일`);
 
-  // TaskManager 내부에서 병렬 업로드 실행
-  uploadFiles(files); // 비동기로 실행
-
-  // 진행 상황 모니터링
+  // 진행 상황 모니터링 시작
   let lastProgress = 0;
   const pollInterval = setInterval(() => {
     const progress = getProgress();
@@ -36,30 +33,22 @@ export async function uploadScreenshots(
         onProgress(progress.current, progress.total);
         lastProgress = progress.current;
       }
-
-      if (!progress.isUploading) {
-        clearInterval(pollInterval);
-      }
     }
-  }, 500);
+  }, 200); // 200ms마다 체크 (더 빠른 UI 업데이트)
 
-  // 업로드 완료 대기 (최대 10분)
-  const maxWaitTime = 10 * 60 * 1000;
-  const checkInterval = 1000;
-  let elapsedWaitTime = 0;
+  try {
+    // TaskManager 내부에서 병렬 업로드 실행 (await로 대기)
+    await uploadFiles(files);
 
-  while (elapsedWaitTime < maxWaitTime) {
-    const progress = getProgress();
-
-    if (!progress || !progress.isUploading) {
-      break;
+    // 업로드 완료 후 최종 진행률 한 번 더 업데이트
+    const finalProgress = getProgress();
+    if (finalProgress && onProgress) {
+      onProgress(finalProgress.current, finalProgress.total);
     }
-
-    await new Promise((resolve) => setTimeout(resolve, checkInterval));
-    elapsedWaitTime += checkInterval;
+  } finally {
+    // 업로드 완료 후 폴링 중지
+    clearInterval(pollInterval);
   }
-
-  clearInterval(pollInterval);
 
   // 결과 계산
   const progress = getProgress();

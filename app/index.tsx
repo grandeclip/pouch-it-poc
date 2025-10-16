@@ -78,25 +78,31 @@ export default function UploadScreen() {
   useEffect(() => {
     let previousAppState = AppState.currentState;
     let backgroundLogInterval: ReturnType<typeof setInterval> | undefined;
+    let backgroundCount = 0; // 백그라운드 카운터 (useEffect 스코프로 이동)
 
     const subscription = AppState.addEventListener(
       "change",
       (nextAppState: AppStateStatus) => {
         console.log(`[AppState] ${previousAppState} -> ${nextAppState}`);
 
-        // 포그라운드 -> 백그라운드 전환
-        if (previousAppState === "active" && nextAppState.match(/inactive|background/)) {
+        // 백그라운드 진입 (inactive는 제외, background만)
+        if (nextAppState === "background") {
           console.log("🌙 [백그라운드] 진입 - 1초마다 로그 시작");
 
+          // 카운터 리셋
+          backgroundCount = 0;
+
           // 1초마다 로그 찍기
-          let count = 0;
           backgroundLogInterval = setInterval(() => {
-            count++;
-            console.log(`🌙 [백그라운드 활성] ${count}초 경과 - 업로드 상태: ${status}`);
+            backgroundCount++;
+            const currentState = AppState.currentState;
+            console.log(`🌙 [백그라운드 활성] ${backgroundCount}초 경과 - AppState: ${currentState} - 업로드: ${status}`);
           }, 1000);
+
+          console.log("🌙 [디버그] setInterval 등록 완료");
         }
 
-        // 백그라운드 -> 포그라운드 복귀
+        // 포그라운드 복귀 (active 상태)
         if (nextAppState === "active") {
           console.log("☀️ [포그라운드] 복귀");
 
@@ -104,7 +110,7 @@ export default function UploadScreen() {
           if (backgroundLogInterval) {
             clearInterval(backgroundLogInterval);
             backgroundLogInterval = undefined;
-            console.log("🌙 [백그라운드] 로그 중지");
+            console.log(`🌙 [백그라운드] 로그 중지 - 총 ${backgroundCount}초 경과`);
           }
 
           if (autoUploadEnabled && status !== "uploading") {

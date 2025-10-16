@@ -46,49 +46,39 @@ async function uploadSingleFile(
 
     const uploadUrl = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SCREENSHOTS}`;
 
-    // FormData 생성
-    const formData = new FormData();
-    // @ts-ignore - React Native의 FormData는 타입 정의가 다름
-    formData.append("screenshots", {
-      uri: compressedImage.uri,
-      type: "image/jpeg",
-      name: file.filename,
-    });
-    formData.append("userId", userId);
-
-    const fileMimeType = "image/jpeg";
-    const uploadOptions = {
-      httpMethod: "POST",
-      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-      fieldName: "screenshots", // 서버에서 파일을 받을 필드 이름 (예: req.file)
-      mimeType: fileMimeType,
+    const uploadOptions: FileSystem.FileSystemUploadOptions = {
       headers: {
-        // 서버에서 필요한 인증 토큰 등을 여기에 추가합니다.
-        Authorization: "Bearer YOUR_AUTH_TOKEN",
-        "Content-Type": fileMimeType,
+        "X-Guest-Id": API_CONFIG.GUEST_USER_ID,
       },
+      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+      fieldName: "screenshots",
+      mimeType: "image/jpeg",
       parameters: {
-        userId: "12345",
-        description: "My image upload",
+        userId: userId,
       },
-      sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
     };
 
     const uploadTask = FileSystem.createUploadTask(
       uploadUrl,
-      uploadUri,
+      compressedImage.uri,
       uploadOptions
     );
 
-    const response = await uploadTask.uploadAsync();
+    const res = await uploadTask.uploadAsync();
 
-    if (response.ok) {
-      return { success: true };
-    } else {
-      const responseText = await response.text();
+    if (!res) {
       return {
         success: false,
-        error: `서버 응답 오류: ${response.status} - ${responseText}`,
+        error: "업로드 응답 없음",
+      };
+    }
+
+    if (res.status >= 200 && res.status < 300) {
+      return { success: true };
+    } else {
+      return {
+        success: false,
+        error: `서버 응답 오류: ${res.status} - ${res.body || "응답 없음"}`,
       };
     }
   } catch (error) {
@@ -106,12 +96,15 @@ async function uploadBatch(
   files: { id: string; uri: string; filename: string }[],
   userId: string,
   _isBackground: boolean
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{
+  successFiles: { id: string; uri: string; filename: string }[];
+  failedFiles: { file: { id: string; uri: string; filename: string }; error: string }[];
+}> {
   try {
     console.log(`[uploadBatch] ${files.length}개 파일 순차 업로드 시작`);
 
-    let successCount = 0;
-    let failedCount = 0;
+    const successFiles: { id: string; uri: string; filename: string }[] = [];
+    const failedFiles: { file: { id: string; uri: string; filename: string }; error: string }[] = [];
 
     // 배치 안의 파일들을 순차적으로 업로드
     for (let i = 0; i < files.length; i++) {
@@ -119,31 +112,38 @@ async function uploadBatch(
 
       const result = await uploadSingleFile(file, userId);
       if (result.success) {
-        successCount++;
+        successFiles.push(file);
       } else {
-        failedCount++;
+        failedFiles.push({
+          file,
+          error: result.error || "알 수 없는 오류",
+        });
       }
     }
 
-    if (failedCount > 0) {
-      console.warn(`⚠️ ${failedCount}개 파일 업로드 실패`);
+    // 로그 출력
+    if (failedFiles.length > 0) {
+      console.warn(
+        `⚠️ ${failedFiles.length}개 파일 업로드 실패:`,
+        failedFiles.map((f) => `\n  - ${f.file.filename}: ${f.error}`).join("")
+      );
     }
 
-    if (successCount > 0) {
-      console.log(`✅ 배치 업로드 성공: ${successCount}/${files.length}개`);
-      return { success: true };
-    } else {
-      return {
-        success: false,
-        error: `모든 파일 업로드 실패 (${failedCount}개)`,
-      };
+    if (successFiles.length > 0) {
+      console.log(`✅ 배치 업로드 성공: ${successFiles.length}/${files.length}개`);
     }
+
+    return { successFiles, failedFiles };
   } catch (error) {
-    console.error("배치 업로드 실패:", error);
+    console.error("[uploadBatch] 예외 발생:", error);
 
+    // 예외 발생 시 모든 파일을 실패로 처리
     return {
-      success: false,
-      error: error instanceof Error ? error.message : "알 수 없는 오류",
+      successFiles: [],
+      failedFiles: files.map((file) => ({
+        file,
+        error: error instanceof Error ? error.message : "알 수 없는 오류",
+      })),
     };
   }
 }
@@ -209,26 +209,23 @@ async function performUpload(
     let successful = 0;
     let failed = 0;
 
-    batchResults.forEach((result, index) => {
-      const batch = batches[index];
-
-      if (result.status === "fulfilled" && result.value.success) {
-        // 성공 시
-        for (const file of batch) {
+    batchResults.forEach((result) => {
+      if (result.status === "fulfilled") {
+        // 성공한 파일들 처리
+        for (const file of result.value.successFiles) {
           markAsUploaded(file.id);
           successful++;
         }
-      } else {
-        // 실패 시
-        const errorMessage =
-          result.status === "fulfilled"
-            ? result.value.error || "배치 업로드 실패"
-            : result.reason?.message || "배치 업로드 실패";
 
-        for (const file of batch) {
-          markAsFailed(file.id, errorMessage);
+        // 실패한 파일들 처리
+        for (const failedItem of result.value.failedFiles) {
+          markAsFailed(failedItem.file.id, failedItem.error);
           failed++;
         }
+      } else {
+        // Promise 자체가 reject된 경우 (예외 발생)
+        console.error("[performUpload] 배치 Promise 실패:", result.reason);
+        failed++;
       }
     });
 

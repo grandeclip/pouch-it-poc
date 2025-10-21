@@ -1,6 +1,6 @@
 import { API_CONFIG } from "@/constants/config";
 import axios from "axios";
-import * as BackgroundFetch from "expo-background-fetch";
+import * as BackgroundTask from "expo-background-task";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as MediaLibrary from "expo-media-library";
@@ -32,7 +32,7 @@ export const UNIFIED_UPLOAD_TASK = "UNIFIED_UPLOAD_TASK";
 /**
  * 업로드 배치 크기 (포그라운드/백그라운드 공통)
  */
-const BATCH_SIZE = 20;
+const BATCH_SIZE = 50;
 
 /**
  * 압축된 파일 정보 인터페이스
@@ -44,6 +44,7 @@ interface CompressedFile {
   originalUri: string;
   compressTime: number;
   uriConvertTime: number;
+  compressedSize: number; // 압축된 파일 크기 (바이트)
 }
 
 /**
@@ -84,6 +85,10 @@ async function compressAndPrepareFile(file: {
     );
     const compressTime = Date.now() - compressStart;
 
+    // 압축된 파일 크기 정보 가져오기
+    const fileInfo = await FileSystem.getInfoAsync(compressedImage.uri);
+    const compressedSize = fileInfo.exists && fileInfo.size ? fileInfo.size : 0;
+
     return {
       id: file.id,
       filename: file.filename,
@@ -91,6 +96,7 @@ async function compressAndPrepareFile(file: {
       originalUri: file.uri,
       compressTime,
       uriConvertTime,
+      compressedSize,
     };
   } catch (error) {
     return {
@@ -360,6 +366,7 @@ async function uploadBatch(
     file: { id: string; uri: string; filename: string };
     error: string;
   }[];
+  successSize: number; // 성공한 파일들의 총 용량 (바이트)
 }> {
   const batchStartTime = Date.now();
   const httpClient = USE_AXIOS ? "axios" : "FileSystem";
@@ -467,9 +474,20 @@ async function uploadBatch(
     const avgUploadTime =
       compressedFiles.length > 0 ? totalUploadTime / compressedFiles.length : 0;
 
+    // 성공한 파일들의 총 용량 계산
+    const successTotalSize = successFiles.reduce((sum, file) => {
+      const compressed = compressedFiles.find(
+        (c) => c.id === file.id
+      );
+      return sum + (compressed?.compressedSize || 0);
+    }, 0);
+
+    const successTotalSizeMB = (successTotalSize / 1024 / 1024).toFixed(2);
+
     console.log(
       `[배치 ${batchIndex}] 2단계 완료: ${successFiles.length}/${compressedFiles.length}개 업로드 성공 | ` +
-        `총 ${uploadPhaseTime}ms | 업로드 평균 ${avgUploadTime.toFixed(0)}ms`
+        `총 ${uploadPhaseTime}ms | 업로드 평균 ${avgUploadTime.toFixed(0)}ms | ` +
+        `업로드 용량: ${successTotalSizeMB}MB`
     );
 
     // ===== 전체 결과 정리 =====
@@ -495,7 +513,8 @@ async function uploadBatch(
         `압축 병렬화로 ${savedTime.toFixed(0)}ms 절약`
     );
 
-    return { successFiles, failedFiles: allFailedFiles };
+    return { successFiles, failedFiles: allFailedFiles, successSize: successTotalSize };
+
   } catch (error) {
     console.error(`[배치 ${batchIndex}] 예외 발생:`, error);
 
@@ -506,6 +525,7 @@ async function uploadBatch(
         file,
         error: error instanceof Error ? error.message : "알 수 없는 오류",
       })),
+      successSize: 0,
     };
   }
 }
@@ -516,7 +536,7 @@ async function uploadBatch(
  */
 async function performUpload(
   files: { id: string; uri: string; filename: string }[]
-): Promise<BackgroundFetch.BackgroundFetchResult> {
+): Promise<BackgroundTask.BackgroundTaskResult> {
   const totalStartTime = Date.now();
   console.log(`\n${"=".repeat(60)}`);
   console.log(`[UnifiedUpload] 업로드 시작: ${files.length}개 파일`);
@@ -527,12 +547,12 @@ async function performUpload(
     const { status } = await MediaLibrary.getPermissionsAsync();
     if (status !== "granted") {
       console.log("[UnifiedUpload] 미디어 라이브러리 권한 없음");
-      return BackgroundFetch.BackgroundFetchResult.Failed;
+      return BackgroundTask.BackgroundTaskResult.Failed;
     }
 
     if (files.length === 0) {
       clearProgress();
-      return BackgroundFetch.BackgroundFetchResult.NoData;
+      return BackgroundTask.BackgroundTaskResult.Success;
     }
 
     // 2. 모든 파일을 BATCH_SIZE개씩 나눠서 배치 생성
@@ -573,6 +593,7 @@ async function performUpload(
     // 6. 결과 처리
     let successful = 0;
     let failed = 0;
+    let totalUploadedSize = 0; // 업로드된 파일의 총 용량
 
     batchResults.forEach((result) => {
       if (result.status === "fulfilled") {
@@ -587,6 +608,9 @@ async function performUpload(
           markAsFailed(failedItem.file.id, failedItem.error);
           failed++;
         }
+
+        // 배치의 총 업로드 용량 누적
+        totalUploadedSize += result.value.successSize;
       } else {
         // Promise 자체가 reject된 경우 (예외 발생)
         console.error("[performUpload] 배치 Promise 실패:", result.reason);
@@ -604,6 +628,7 @@ async function performUpload(
     const totalTime = Date.now() - totalStartTime;
     const avgTimePerFile = totalTime / files.length;
     const successRate = ((successful / files.length) * 100).toFixed(1);
+    const totalUploadedSizeMB = (totalUploadedSize / 1024 / 1024).toFixed(2);
 
     console.log(`\n${"=".repeat(60)}`);
     console.log(`[전체 통계]`);
@@ -611,6 +636,7 @@ async function performUpload(
     console.log(
       `  성공: ${successful}개 | 실패: ${failed}개 | 성공률: ${successRate}%`
     );
+    console.log(`  업로드된 총 용량: ${totalUploadedSizeMB}MB`);
     console.log(
       `  총 소요 시간: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}초)`
     );
@@ -619,14 +645,14 @@ async function performUpload(
     console.log(`${"=".repeat(60)}\n`);
 
     if (successful > 0) {
-      return BackgroundFetch.BackgroundFetchResult.NewData;
+      return BackgroundTask.BackgroundTaskResult.Success;
     } else {
-      return BackgroundFetch.BackgroundFetchResult.Failed;
+      return BackgroundTask.BackgroundTaskResult.Failed;
     }
   } catch (error) {
     console.error("[UnifiedUpload] 업로드 오류:", error);
     clearProgress();
-    return BackgroundFetch.BackgroundFetchResult.Failed;
+    return BackgroundTask.BackgroundTaskResult.Failed;
   }
 }
 
@@ -642,7 +668,7 @@ TaskManager.defineTask(UNIFIED_UPLOAD_TASK, async () => {
 
   if (uploadQueue.length === 0) {
     console.log("[TaskManager] 업로드할 파일 없음");
-    return BackgroundFetch.BackgroundFetchResult.NoData;
+    return BackgroundTask.BackgroundTaskResult.Success;
   }
 
   // 큐에서 파일 가져오기
@@ -653,7 +679,7 @@ TaskManager.defineTask(UNIFIED_UPLOAD_TASK, async () => {
   const result = await performUpload(filesToUpload);
 
   // 성공하면 큐에서 제거
-  if (result === BackgroundFetch.BackgroundFetchResult.NewData) {
+  if (result === BackgroundTask.BackgroundTaskResult.Success) {
     uploadQueue = [];
   }
 
@@ -670,10 +696,8 @@ export async function registerPeriodicUpload(): Promise<void> {
     );
 
     if (!isRegistered) {
-      await BackgroundFetch.registerTaskAsync(UNIFIED_UPLOAD_TASK, {
+      await BackgroundTask.registerTaskAsync(UNIFIED_UPLOAD_TASK, {
         minimumInterval: 15 * 60, // 15분
-        stopOnTerminate: false, // 앱 종료 후에도 실행
-        startOnBoot: true, // 기기 재시작 후 실행 (Android)
       });
       console.log("[UnifiedUpload] 주기적 백그라운드 업로드 Task 등록 완료");
     } else {
@@ -694,7 +718,7 @@ export async function unregisterPeriodicUpload(): Promise<void> {
     );
 
     if (isRegistered) {
-      await BackgroundFetch.unregisterTaskAsync(UNIFIED_UPLOAD_TASK);
+      await BackgroundTask.unregisterTaskAsync(UNIFIED_UPLOAD_TASK);
       console.log("[UnifiedUpload] 주기적 백그라운드 업로드 Task 해제 완료");
     }
   } catch (error) {

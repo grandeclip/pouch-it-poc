@@ -10,7 +10,6 @@ import {
   unregisterPeriodicUpload,
   UNIFIED_UPLOAD_TASK,
 } from "./unifiedUpload";
-import * as BackgroundFetch from "expo-background-fetch";
 import * as TaskManager from "expo-task-manager";
 
 // 하위 호환성을 위한 상수
@@ -39,15 +38,12 @@ export async function unregisterBackgroundUpload(): Promise<void> {
  */
 export async function getBackgroundUploadStatus(): Promise<{
   isRegistered: boolean;
-  status?: BackgroundFetch.BackgroundFetchStatus;
 }> {
   try {
     const isRegistered = await TaskManager.isTaskRegisteredAsync(UNIFIED_UPLOAD_TASK);
-    const fetchStatus = await BackgroundFetch.getStatusAsync();
 
     return {
       isRegistered,
-      status: fetchStatus ?? undefined,
     };
   } catch (error) {
     console.error("[BackgroundUpload] 상태 확인 실패:", error);

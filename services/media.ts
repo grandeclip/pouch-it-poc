@@ -45,7 +45,7 @@ export async function getScreenshotsFromLibrary(): Promise<ScreenshotAsset[]> {
     const albumAssets = await MediaLibrary.getAssetsAsync({
       album: screenshotAlbum,
       mediaType: MediaLibrary.MediaType.photo,
-      first: 10,
+      first: 100,
       sortBy: MediaLibrary.SortBy.creationTime,
     });
 

@@ -6,6 +6,7 @@
 **목적:** 모바일 기기의 스크린샷을 자동으로 감지, 압축, 업로드하는 React Native 애플리케이션
 
 ### 핵심 기능
+
 - ✅ 기기 갤러리에서 스크린샷 자동 스캔 및 감지
 - ✅ 이미지 압축 (expo-image-manipulator 사용)
 - ✅ 배치 업로드 (BATCH_SIZE = 20)
@@ -20,6 +21,7 @@
 ## 🏗️ 기술 스택
 
 ### 핵심 프레임워크
+
 - **React Native:** 0.81.4
 - **Expo SDK:** ~54.0.13
 - **React:** 19.1.0
@@ -27,18 +29,20 @@
 - **TypeScript:** 5.9.2 (strict mode)
 
 ### 주요 라이브러리
-| 용도 | 라이브러리 | 버전 |
-|------|-----------|------|
-| 상태 관리 | react-native-mmkv | 3.3.3 |
-| 애니메이션 | react-native-reanimated | ~4.1.1 |
-| 네비게이션 | @react-navigation/bottom-tabs | 7.4.0 |
-| HTTP | axios | 1.12.2 |
-| 이미지 | expo-image, expo-image-manipulator | 3.0.9, 14.0.7 |
-| 카메라/갤러리 | expo-camera, expo-media-library | 17.0.8, 18.2.0 |
-| 백그라운드 | expo-background-fetch, expo-task-manager | 14.0.7 |
-| 파일 시스템 | expo-file-system | 19.0.17 |
+
+| 용도          | 라이브러리                               | 버전           |
+| ------------- | ---------------------------------------- | -------------- |
+| 상태 관리     | react-native-mmkv                        | 3.3.3          |
+| 애니메이션    | react-native-reanimated                  | ~4.1.1         |
+| 네비게이션    | @react-navigation/bottom-tabs            | 7.4.0          |
+| HTTP          | axios                                    | 1.12.2         |
+| 이미지        | expo-image, expo-image-manipulator       | 3.0.9, 14.0.7  |
+| 카메라/갤러리 | expo-camera, expo-media-library          | 17.0.8, 18.2.0 |
+| 백그라운드    | expo-background-fetch, expo-task-manager | 14.0.7         |
+| 파일 시스템   | expo-file-system                         | 19.0.17        |
 
 ### 아키텍처 특징
+
 - **New Architecture 활성화:** React Native의 새 아키텍처 사용
 - **React Compiler 실험:** 성능 최적화 실험
 - **Typed Routes:** 안전한 라우트 타입 체크
@@ -96,39 +100,47 @@ pouch-it-poc/
 ## 🔄 주요 아키텍처 패턴
 
 ### 1. 서비스 지향 아키텍처 (Service-Oriented Architecture)
+
 - `services/` 디렉토리에 비즈니스 로직을 명확히 분리
 - 각 서비스가 단일 책임을 가짐
 - UI 로직과 비즈니스 로직의 완전한 분리
 
 ### 2. 파일 기반 라우팅 (Expo Router)
+
 - `app/` 디렉토리 구조가 자동으로 라우팅 구조로 변환
 - Type-safe 라우팅 지원
 - 딥링킹 지원 (scheme: `pouchitpoc://`)
 
 ### 3. MMKV를 활용한 상태 관리
+
 ```typescript
 // uploadDB.ts - 업로드된 스크린샷 추적
 // uploadQueue.ts - 업로드 큐 관리
 // settings.ts - 앱 설정 저장
 ```
+
 - 동기식 접근으로 성능 최적화
 - 앱 재시작 후에도 상태 유지
 
 ### 4. 하이브리드 HTTP 전략 (A/B 테스트 가능)
+
 ```typescript
 // unifiedUpload.ts
-const USE_AXIOS = false;  // true: axios, false: FileSystem API
+const USE_AXIOS = true; // true: axios, false: FileSystem API
 ```
+
 - Axios: 빠른 속도
 - FileSystem API: 백그라운드 안정성
 - 같은 압축/배치 로직, 다른 전송 방식
 
 ### 5. 백그라운드 업로드 태스크
+
 - `expo-background-fetch` + `expo-task-manager`로 정기적 업로드
 - AppState 모니터링으로 포그라운드/백그라운드 전환 감지
 - 큐에 남은 파일을 자동으로 업로드
 
 ### 6. 이미지 처리 파이프라인
+
 ```typescript
 // unifiedUpload.ts의 핵심 플로우:
 1. media.ts에서 스크린샷 스캔
@@ -144,11 +156,13 @@ const USE_AXIOS = false;  // true: axios, false: FileSystem API
 ## 📡 API 설정
 
 ### 엔드포인트
+
 - **Base URL:** `https://pouchit-api-dev-production.up.railway.app`
 - **Screenshot Upload:** `POST /api/v3/screenshots`
 - **Backend:** Railway.app 호스팅
 
 ### 사용자
+
 - **Guest User ID:** `123e4567-e89b-12d3-a456-426614174000` (기본값)
 - 익명 사용자도 업로드 가능한 구조
 
@@ -157,16 +171,19 @@ const USE_AXIOS = false;  // true: axios, false: FileSystem API
 ## 🚀 주요 개발 포인트
 
 ### 수정된 파일: `services/media.ts`
+
 - 스크린샷 감지 및 갤러리 접근 로직
 - 권한 처리
 - 파일 필터링
 
 ### 중요한 상수들
+
 - **BATCH_SIZE = 20:** 한 번에 업로드할 이미지 개수
 - **COMPRESSION_QUALITY:** 이미지 압축 레벨
 - **PARALLEL_UPLOADS:** 병렬 업로드 여부
 
 ### 개발 시 주의사항
+
 1. **권한 처리:** 카메라/갤러리 권한 필수 (iOS/Android 모두)
 2. **메모리 관리:** 대량 이미지 처리 시 메모리 누수 주의
 3. **배터리 사용:** 백그라운드 업로드는 배터리 소모 고려

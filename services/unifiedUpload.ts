@@ -24,7 +24,21 @@ import { clearProgress, saveProgress } from "./uploadQueue";
 //   - HTTP 통신 부분만 교체됨
 //   - 성능 비교 테스트 시 같은 조건에서 진행 가능
 // ============================================================
-const USE_AXIOS = false;
+const USE_AXIOS = true;
+// ============================================================
+
+// ============================================================
+// 🖼️ 이미지 압축 옵션 (ON/OFF)
+// ============================================================
+// ✅ true:  이미지 압축 실행 (JPEG 0.7 품질)
+// ✅ false: 이미지 압축 스킵 (원본 파일 그대로 업로드)
+//
+// 📝 사용법:
+//   1. 아래 값을 true/false로 변경
+//   2. 앱 재시작
+//   3. 압축 시간 vs 용량 테스트 가능
+// ============================================================
+const SKIP_COMPRESS = false;
 // ============================================================
 
 export const UNIFIED_UPLOAD_TASK = "UNIFIED_UPLOAD_TASK";
@@ -76,14 +90,23 @@ async function compressAndPrepareFile(file: {
     }
     const uriConvertTime = Date.now() - uriConvertStart;
 
-    // 이미지 압축 (0.7 품질)
-    const compressStart = Date.now();
-    const compressedImage = await ImageManipulator.manipulateAsync(
-      uploadUri,
-      [], // 리사이즈 없이 압축만
-      { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
-    );
-    const compressTime = Date.now() - compressStart;
+    let compressedImage;
+    let compressTime = 0;
+
+    if (SKIP_COMPRESS) {
+      // ===== 압축 스킵: 원본 파일 그대로 사용 =====
+      console.log(`[압축 스킵] ${file.filename} 원본 파일 그대로 업로드`);
+      compressedImage = { uri: uploadUri };
+    } else {
+      // ===== 이미지 압축 (0.7 품질) =====
+      const compressStart = Date.now();
+      compressedImage = await ImageManipulator.manipulateAsync(
+        uploadUri,
+        [], // 리사이즈 없이 압축만
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      compressTime = Date.now() - compressStart;
+    }
 
     // 압축된 파일 크기 정보 가져오기
     const fileInfo = await FileSystem.getInfoAsync(compressedImage.uri);
@@ -107,30 +130,39 @@ async function compressAndPrepareFile(file: {
 }
 
 /**
- * 압축된 파일 업로드 전용 함수
- * - USE_AXIOS 플래그에 따라 axios 또는 FileSystem 사용
+ * 압축된 파일 배치 업로드 전용 함수 (여러 파일을 한 번에 업로드)
+ * - 여러 파일을 screenshots 배열로 한 번의 HTTP 요청으로 전송
+ * - axios 방식만 지원 (FileSystem은 1개 파일만 지원)
  */
-async function uploadCompressedFile(
-  compressed: CompressedFile,
+async function uploadCompressedBatch(
+  compressedFiles: CompressedFile[],
   userId: string
-): Promise<{ success: boolean; error?: string; uploadTime: number }> {
+): Promise<{
+  success: boolean;
+  error?: string;
+  uploadTime: number;
+  uploadedCount: number;
+}> {
   const uploadUrl = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SCREENSHOTS}`;
   const uploadStart = Date.now();
   let uploadSuccess = false;
   let uploadError = "";
+  let uploadedCount = 0;
 
   if (USE_AXIOS) {
-    // ===== axios 사용 =====
+    // ===== axios 사용: 배치 업로드 =====
     try {
       const formData = new FormData();
 
-      // React Native 방식으로 파일 추가
-      // @ts-ignore - React Native FormData는 웹과 다른 인터페이스 사용
-      formData.append("screenshots", {
-        uri: compressed.compressedUri,
-        type: "image/jpeg",
-        name: compressed.filename,
-      });
+      // 모든 파일을 screenshots 필드에 추가
+      for (const compressed of compressedFiles) {
+        // @ts-ignore - React Native FormData는 웹과 다른 인터페이스 사용
+        formData.append("screenshots", {
+          uri: compressed.compressedUri,
+          type: "image/jpeg",
+          name: compressed.filename,
+        });
+      }
 
       formData.append("userId", userId);
 
@@ -139,11 +171,12 @@ async function uploadCompressedFile(
           "X-Guest-Id": API_CONFIG.GUEST_USER_ID,
           "Content-Type": "multipart/form-data",
         },
-        timeout: 30000, // 30초 타임아웃
+        timeout: 120000, // 120초 타임아웃 (배치 파일용)
       });
 
       if (response.status >= 200 && response.status < 300) {
         uploadSuccess = true;
+        uploadedCount = compressedFiles.length;
       } else {
         uploadError = `서버 응답 오류: ${response.status}`;
       }
@@ -158,202 +191,35 @@ async function uploadCompressedFile(
       }
     }
   } else {
-    // ===== FileSystem 사용 =====
-    try {
-      const uploadOptions: FileSystem.FileSystemUploadOptions = {
-        headers: {
-          "X-Guest-Id": API_CONFIG.GUEST_USER_ID,
-        },
-        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-        fieldName: "screenshots",
-        mimeType: "image/jpeg",
-        parameters: {
-          userId: userId,
-        },
-      };
-
-      const uploadTask = FileSystem.createUploadTask(
-        uploadUrl,
-        compressed.compressedUri,
-        uploadOptions
-      );
-
-      const res = await uploadTask.uploadAsync();
-
-      if (!res) {
-        uploadError = "업로드 응답 없음";
-      } else if (res.status >= 200 && res.status < 300) {
-        uploadSuccess = true;
-      } else {
-        uploadError = `서버 응답 오류: ${res.status} - ${
-          res.body || "응답 없음"
-        }`;
-      }
-    } catch (error) {
-      uploadError = error instanceof Error ? error.message : "알 수 없는 오류";
-    }
+    // ===== FileSystem 사용: 배치 업로드 미지원 경고 =====
+    console.warn(
+      "[uploadCompressedBatch] FileSystem API는 배치 업로드를 지원하지 않습니다. axios 사용을 권장합니다."
+    );
+    uploadError = "FileSystem API는 배치 업로드를 지원하지 않습니다";
   }
 
   const uploadTime = Date.now() - uploadStart;
 
   if (uploadSuccess) {
-    return { success: true, uploadTime };
+    return {
+      success: true,
+      uploadTime,
+      uploadedCount,
+    };
   } else {
     return {
       success: false,
       error: uploadError || "알 수 없는 오류",
       uploadTime,
+      uploadedCount: 0,
     };
   }
 }
 
 /**
- * 단일 파일 업로드 (레거시 - 순차 처리용)
- * ⚠️ 현재는 uploadBatch에서 압축 병렬화를 사용하므로 이 함수는 사용되지 않음
- * fetch는 네이티브에서 백그라운드를 일부 지원
- */
-async function uploadSingleFile(
-  file: { id: string; uri: string; filename: string },
-  userId: string
-): Promise<{ success: boolean; error?: string }> {
-  const fileStartTime = Date.now();
-  try {
-    let uploadUri = file.uri;
-
-    // iOS Photos URI 변환
-    const uriConvertStart = Date.now();
-    if (uploadUri.startsWith("ph://") || uploadUri.startsWith("ph-upload://")) {
-      try {
-        const asset = await MediaLibrary.getAssetInfoAsync(file.id);
-        if (asset.localUri) {
-          uploadUri = asset.localUri;
-        }
-      } catch (error) {
-        console.error(`URI 변환 실패: ${file.filename}`, error);
-      }
-    }
-    const uriConvertTime = Date.now() - uriConvertStart;
-
-    // 이미지 압축 (0.7 품질)
-    const compressStart = Date.now();
-    const compressedImage = await ImageManipulator.manipulateAsync(
-      uploadUri,
-      [], // 리사이즈 없이 압축만
-      { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
-    );
-    const compressTime = Date.now() - compressStart;
-
-    const uploadUrl = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SCREENSHOTS}`;
-
-    // ===== HTTP 클라이언트 선택 =====
-    const uploadStart = Date.now();
-    let uploadSuccess = false;
-    let uploadError = "";
-
-    if (USE_AXIOS) {
-      // ===== axios 사용 =====
-      try {
-        const formData = new FormData();
-
-        // React Native 방식으로 파일 추가
-        // @ts-ignore - React Native FormData는 웹과 다른 인터페이스 사용
-        formData.append("screenshots", {
-          uri: compressedImage.uri,
-          type: "image/jpeg",
-          name: file.filename,
-        });
-
-        formData.append("userId", userId);
-
-        const response = await axios.post(uploadUrl, formData, {
-          headers: {
-            "X-Guest-Id": API_CONFIG.GUEST_USER_ID,
-            "Content-Type": "multipart/form-data",
-          },
-          timeout: 30000, // 30초 타임아웃
-        });
-
-        if (response.status >= 200 && response.status < 300) {
-          uploadSuccess = true;
-        } else {
-          uploadError = `서버 응답 오류: ${response.status}`;
-        }
-      } catch (error) {
-        if (axios.isAxiosError(error)) {
-          uploadError = `axios 오류: ${error.message} (${
-            error.code || "UNKNOWN"
-          })`;
-        } else {
-          uploadError =
-            error instanceof Error ? error.message : "알 수 없는 오류";
-        }
-      }
-    } else {
-      // ===== FileSystem 사용 =====
-      try {
-        const uploadOptions: FileSystem.FileSystemUploadOptions = {
-          headers: {
-            "X-Guest-Id": API_CONFIG.GUEST_USER_ID,
-          },
-          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-          fieldName: "screenshots",
-          mimeType: "image/jpeg",
-          parameters: {
-            userId: userId,
-          },
-        };
-
-        const uploadTask = FileSystem.createUploadTask(
-          uploadUrl,
-          compressedImage.uri,
-          uploadOptions
-        );
-
-        const res = await uploadTask.uploadAsync();
-
-        if (!res) {
-          uploadError = "업로드 응답 없음";
-        } else if (res.status >= 200 && res.status < 300) {
-          uploadSuccess = true;
-        } else {
-          uploadError = `서버 응답 오류: ${res.status} - ${
-            res.body || "응답 없음"
-          }`;
-        }
-      } catch (error) {
-        uploadError =
-          error instanceof Error ? error.message : "알 수 없는 오류";
-      }
-    }
-
-    const uploadTime = Date.now() - uploadStart;
-    const totalTime = Date.now() - fileStartTime;
-
-    const httpClient = USE_AXIOS ? "axios" : "FileSystem";
-    console.log(
-      `[타이밍][${httpClient}] ${file.filename}: URI 변환 ${uriConvertTime}ms | 압축 ${compressTime}ms | 업로드 ${uploadTime}ms | 총 ${totalTime}ms`
-    );
-
-    if (uploadSuccess) {
-      return { success: true };
-    } else {
-      return {
-        success: false,
-        error: uploadError || "알 수 없는 오류",
-      };
-    }
-  } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "알 수 없는 오류",
-    };
-  }
-}
-
-/**
- * 파일 배치 업로드 (압축 병렬 + 업로드 순차)
+ * 파일 배치 업로드 (압축 병렬 + 배치 HTTP 요청)
  * - [1단계] 배치 내 모든 파일 압축을 병렬로 수행
- * - [2단계] 압축된 파일들을 순차적으로 업로드
+ * - [2단계] 압축된 파일들을 한 번의 HTTP 요청으로 배치 업로드
  */
 async function uploadBatch(
   files: { id: string; uri: string; filename: string }[],
@@ -434,10 +300,10 @@ async function uploadBatch(
       );
     }
 
-    // ===== 2단계: 압축된 파일들을 순차 업로드 =====
+    // ===== 2단계: 압축된 파일들을 배치로 한 번에 업로드 =====
     const uploadPhaseStart = Date.now();
     console.log(
-      `[배치 ${batchIndex}] 2단계: ${compressedFiles.length}개 파일 순차 업로드 시작`
+      `[배치 ${batchIndex}] 2단계: ${compressedFiles.length}개 파일 배치 업로드 시작 (1회 HTTP 요청)`
     );
 
     const successFiles: { id: string; uri: string; filename: string }[] = [];
@@ -446,39 +312,42 @@ async function uploadBatch(
       error: string;
     }[] = [];
 
-    let totalUploadTime = 0;
+    // 배치로 한 번에 업로드
+    const batchResult = await uploadCompressedBatch(compressedFiles, userId);
 
-    for (const compressed of compressedFiles) {
-      const result = await uploadCompressedFile(compressed, userId);
-      totalUploadTime += result.uploadTime;
+    const uploadPhaseTime = Date.now() - uploadPhaseStart;
 
-      if (result.success) {
+    if (batchResult.success) {
+      // 배치 업로드 성공 → 모든 파일을 성공으로 처리
+      for (const compressed of compressedFiles) {
         successFiles.push({
           id: compressed.id,
           uri: compressed.originalUri,
           filename: compressed.filename,
         });
-      } else {
+      }
+    } else {
+      // 배치 업로드 실패 → 모든 파일을 실패로 처리
+      for (const compressed of compressedFiles) {
         uploadFailed.push({
           file: {
             id: compressed.id,
             uri: compressed.originalUri,
             filename: compressed.filename,
           },
-          error: result.error || "알 수 없는 오류",
+          error: batchResult.error || "배치 업로드 실패",
         });
       }
     }
 
-    const uploadPhaseTime = Date.now() - uploadPhaseStart;
     const avgUploadTime =
-      compressedFiles.length > 0 ? totalUploadTime / compressedFiles.length : 0;
+      compressedFiles.length > 0
+        ? batchResult.uploadTime / compressedFiles.length
+        : 0;
 
     // 성공한 파일들의 총 용량 계산
     const successTotalSize = successFiles.reduce((sum, file) => {
-      const compressed = compressedFiles.find(
-        (c) => c.id === file.id
-      );
+      const compressed = compressedFiles.find((c) => c.id === file.id);
       return sum + (compressed?.compressedSize || 0);
     }, 0);
 
@@ -486,7 +355,9 @@ async function uploadBatch(
 
     console.log(
       `[배치 ${batchIndex}] 2단계 완료: ${successFiles.length}/${compressedFiles.length}개 업로드 성공 | ` +
-        `총 ${uploadPhaseTime}ms | 업로드 평균 ${avgUploadTime.toFixed(0)}ms | ` +
+        `총 ${uploadPhaseTime}ms | 업로드 평균 ${avgUploadTime.toFixed(
+          0
+        )}ms | ` +
         `업로드 용량: ${successTotalSizeMB}MB`
     );
 
@@ -510,11 +381,16 @@ async function uploadBatch(
     console.log(
       `✅ [배치 ${batchIndex}] 전체 완료: ${successFiles.length}/${files.length}개 성공 | ` +
         `총 ${batchTime}ms | 파일당 평균 ${avgTimePerFile.toFixed(0)}ms | ` +
-        `압축 병렬화로 ${savedTime.toFixed(0)}ms 절약`
+        (SKIP_COMPRESS
+          ? `압축 스킵 모드`
+          : `압축 병렬화로 ${savedTime.toFixed(0)}ms 절약`)
     );
 
-    return { successFiles, failedFiles: allFailedFiles, successSize: successTotalSize };
-
+    return {
+      successFiles,
+      failedFiles: allFailedFiles,
+      successSize: successTotalSize,
+    };
   } catch (error) {
     console.error(`[배치 ${batchIndex}] 예외 발생:`, error);
 
